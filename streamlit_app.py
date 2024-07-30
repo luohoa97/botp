@@ -1,151 +1,89 @@
-import streamlit as st
-import pandas as pd
-import math
-from pathlib import Path
+from chatterbot import ChatBot
+from chatterbot.trainers import ListTrainer
+import threading
+import time
 
-# Set the title and favicon that appear in the Browser's tab bar.
-st.set_page_config(
-    page_title='GDP dashboard',
-    page_icon=':earth_americas:', # This is an emoji shortcode. Could be a URL too.
+# Define the path to the database file
+db_path = 'database.sqlite3'
+
+# Create a new ChatBot instance
+chatbot = ChatBot(
+    'RoleplayBot',
+    storage_adapter='chatterbot.storage.SQLStorageAdapter',
+    logic_adapters=[
+        'chatterbot.logic.BestMatch',
+        'chatterbot.logic.MathematicalEvaluation'
+    ],
+    database_uri=f'sqlite:///{db_path}'
 )
 
-# -----------------------------------------------------------------------------
-# Declare some useful functions.
-
-@st.cache_data
-def get_gdp_data():
-    """Grab GDP data from a CSV file.
-
-    This uses caching to avoid having to read the file every time. If we were
-    reading from an HTTP endpoint instead of a file, it's a good idea to set
-    a maximum age to the cache with the TTL argument: @st.cache_data(ttl='1d')
-    """
-
-    # Instead of a CSV on disk, you could read from an HTTP endpoint here too.
-    DATA_FILENAME = Path(__file__).parent/'data/gdp_data.csv'
-    raw_gdp_df = pd.read_csv(DATA_FILENAME)
-
-    MIN_YEAR = 1960
-    MAX_YEAR = 2022
-
-    # The data above has columns like:
-    # - Country Name
-    # - Country Code
-    # - [Stuff I don't care about]
-    # - GDP for 1960
-    # - GDP for 1961
-    # - GDP for 1962
-    # - ...
-    # - GDP for 2022
-    #
-    # ...but I want this instead:
-    # - Country Name
-    # - Country Code
-    # - Year
-    # - GDP
-    #
-    # So let's pivot all those year-columns into two: Year and GDP
-    gdp_df = raw_gdp_df.melt(
-        ['Country Code'],
-        [str(x) for x in range(MIN_YEAR, MAX_YEAR + 1)],
-        'Year',
-        'GDP',
-    )
-
-    # Convert years from string to integers
-    gdp_df['Year'] = pd.to_numeric(gdp_df['Year'])
-
-    return gdp_df
-
-gdp_df = get_gdp_data()
-
-# -----------------------------------------------------------------------------
-# Draw the actual page
-
-# Set the title that appears at the top of the page.
-'''
-# :earth_americas: GDP dashboard
-
-Browse GDP data from the [World Bank Open Data](https://data.worldbank.org/) website. As you'll
-notice, the data only goes to 2022 right now, and datapoints for certain years are often missing.
-But it's otherwise a great (and did I mention _free_?) source of data.
-'''
-
-# Add some spacing
-''
-''
-
-min_value = gdp_df['Year'].min()
-max_value = gdp_df['Year'].max()
-
-from_year, to_year = st.slider(
-    'Which years are you interested in?',
-    min_value=min_value,
-    max_value=max_value,
-    value=[min_value, max_value])
-
-countries = gdp_df['Country Code'].unique()
-
-if not len(countries):
-    st.warning("Select at least one country")
-
-selected_countries = st.multiselect(
-    'Which countries would you like to view?',
-    countries,
-    ['DEU', 'FRA', 'GBR', 'BRA', 'MEX', 'JPN'])
-
-''
-''
-''
-
-# Filter the data
-filtered_gdp_df = gdp_df[
-    (gdp_df['Country Code'].isin(selected_countries))
-    & (gdp_df['Year'] <= to_year)
-    & (from_year <= gdp_df['Year'])
+# Define roleplay data with alternating roles
+roleplay_data = [
+    "User: Hello, how are you?",
+    "Bot: I'm great, thanks! How can I assist you today?",
+    "User: Can you tell me a joke?",
+    "Bot: Sure! Why did the chicken join a band? Because it had the drumsticks!",
+    "User: That's funny!",
+    "Bot: Glad you liked it! What else can I do for you?"
 ]
 
-st.header('GDP over time', divider='gray')
+# Function to train the ChatBot
+def train_chatbot():
+    trainer = ListTrainer(chatbot)
+    trainer.train(roleplay_data)
+    print("Training completed.")
 
-''
+# Function to auto-save the chatbot state
+def auto_save():
+    while True:
+        print("Auto-saving...")
+        chatbot.storage.drop()  # Ensure database integrity
+        chatbot.storage.save()
+        time.sleep(60)  # Save every 60 seconds
 
-st.line_chart(
-    filtered_gdp_df,
-    x='Year',
-    y='GDP',
-    color='Country Code',
-)
+# Function to handle roleplay interaction
+def roleplay_mode():
+    print("Roleplay Mode. Alternating between roles...")
+    for item in roleplay_data:
+        role, text = item.split(": ")
+        print(f"{role}: {text}")
+        if role == "User":
+            # Get bot's response
+            response = chatbot.get_response(text)
+            print("Bot:", response)
 
-''
-''
+# Function to handle chat interaction
+def chat_mode():
+    print("Chat Mode. Type 'exit' to quit.")
+    while True:
+        user_input = input("You: ")
+        if user_input.lower() == 'exit':
+            break
+        bot_response = chatbot.get_response(user_input)
+        print("Bot:", bot_response)
 
-
-first_year = gdp_df[gdp_df['Year'] == from_year]
-last_year = gdp_df[gdp_df['Year'] == to_year]
-
-st.header(f'GDP in {to_year}', divider='gray')
-
-''
-
-cols = st.columns(4)
-
-for i, country in enumerate(selected_countries):
-    col = cols[i % len(cols)]
-
-    with col:
-        first_gdp = first_year[gdp_df['Country Code'] == country]['GDP'].iat[0] / 1000000000
-        last_gdp = last_year[gdp_df['Country Code'] == country]['GDP'].iat[0] / 1000000000
-
-        if math.isnan(first_gdp):
-            growth = 'n/a'
-            delta_color = 'off'
+# Main function to toggle between modes
+def main():
+    # Train the ChatBot
+    train_chatbot()
+    
+    # Start auto-save in the background
+    auto_save_thread = threading.Thread(target=auto_save)
+    auto_save_thread.daemon = True
+    auto_save_thread.start()
+    
+    # Toggle between roleplay mode and chat mode
+    while True:
+        mode = input("Enter 'roleplay' for roleplay mode, 'chat' for chat mode, or 'exit' to quit: ").strip().lower()
+        if mode == 'roleplay':
+            roleplay_mode()
+        elif mode == 'chat':
+            chat_mode()
+        elif mode == 'exit':
+            print("Exiting...")
+            break
         else:
-            growth = f'{last_gdp / first_gdp:,.2f}x'
-            delta_color = 'normal'
+            print("Invalid input. Please enter 'roleplay', 'chat', or 'exit'.")
 
-        st.metric(
-            label=f'{country} GDP',
-            value=f'{last_gdp:,.0f}B',
-            delta=growth,
-            delta_color=delta_color
-        )
+if __name__ == '__main__':
+    main()
