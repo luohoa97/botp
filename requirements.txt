@@ -1,1 +1,2 @@
-chatterbot
+pip install sqlalchemy==1.4.47
+pip install chatterbot==1.0.5
